@@ -87,7 +87,7 @@ struct MooncakeEpBuffer {
     int USE_QP_COUNT = MAX_QP_COUNT;
 
     // Stream for communication
-    at::cuda::CUDAStream comm_stream;
+    DeviceStream comm_stream;
 
     // Workspace
     void* workspace = nullptr;

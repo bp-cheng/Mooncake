@@ -3,8 +3,8 @@
 // mooncake_ep_device.h — Unified CUDA/MUSA compatibility header
 // ============================================================================
 // Device-compatible types and macros only (no ATen / libtorch).
-// ATen types (at::cuda::CUDAStream, torch::kCUDA, etc.) are used directly
-// — torchada transparently maps them to MUSA equivalents at build time.
+// ATen type aliases (DeviceStream, kDeviceType, etc.) are in
+// mooncake_ep_event.h.
 // ============================================================================
 
 // NOTE: mooncake_ep_exception.cuh is NOT included here — it is always
@@ -19,6 +19,9 @@
 #include "cuda_alike.h"       // cuda* → musa* runtime API mapping
 #include <musa_bf16.h>        // mt_bfloat16
 #include <musa_runtime.h>     // musaStream_t, musaError_t, etc.
+
+// -- Stream type alias (musaStream_t → cudaStream_t) ------------------------
+typedef musaStream_t cudaStream_t;
 
 // -- bfloat16 -----------------------------------------------------------------
 #ifdef __MUSA_ARCH__
@@ -73,6 +76,19 @@ __forceinline__ __device__ int get_lane_id() { return threadIdx.x % 32; }
 // -- Memory fence (MUSA needs explicit fences for peer visibility) -----------
 #define EP_DEVICE_FENCE()  __threadfence_system()
 
+// -- Unified error checking (cuda_alike.h maps cudaError_t/cudaGetErrorString/cudaSuccess) --
+#define EP_CHECK(cmd)                                              \
+    do {                                                           \
+        cudaError_t e = (cmd);                                     \
+        if (e != cudaSuccess) {                                    \
+            throw EPException("GPU", __FILE__, __LINE__,           \
+                              cudaGetErrorString(e));              \
+        }                                                          \
+    } while (0)
+
+// -- Unified device synchronization (gpu_vendor/musa.h maps cudaDeviceSynchronize) --
+#define EP_DEVICE_SYNCHRONIZE()  cudaDeviceSynchronize()
+
 #else  // !MOONCAKE_EP_USE_MUSA
 
 // ---- CUDA platform ---------------------------------------------------------
@@ -110,11 +126,7 @@ __forceinline__ __device__ int get_lane_id() {
 // -- Memory fence (no-op on CUDA) --------------------------------------------
 #define EP_DEVICE_FENCE()  do {} while (0)
 
-#endif  // MOONCAKE_EP_USE_MUSA
-
-// ---- Shared macros (identical on both platforms) ---------------------------
-
-// Unified error checking
+// -- Unified error checking (native CUDA names) ------------------------------
 #define EP_CHECK(cmd)                                              \
     do {                                                           \
         cudaError_t e = (cmd);                                     \
@@ -124,5 +136,7 @@ __forceinline__ __device__ int get_lane_id() {
         }                                                          \
     } while (0)
 
-// Unified device synchronization
+// -- Unified device synchronization ------------------------------------------
 #define EP_DEVICE_SYNCHRONIZE()  cudaDeviceSynchronize()
+
+#endif  // MOONCAKE_EP_USE_MUSA
