@@ -32,10 +32,11 @@ current_dir = os.path.abspath(os.path.dirname(__file__))
 abi_define = f"-D_GLIBCXX_USE_CXX11_ABI={abi_flag}"
 cxx_args = [abi_define, "-std=c++20", "-O3", "-g0"]
 
-cuda_libraries = []
+cuda_libraries = ["ibverbs", "mlx5"]
 cuda_library_dirs = []
 
 if use_musa:
+    cuda_libraries = []
     musa_defines = ["-DUSE_MUSA", "-DMOONCAKE_EP_USE_MUSA=1"]
     cxx_args += musa_defines
     # torchada maps the "nvcc" key to "mcc".

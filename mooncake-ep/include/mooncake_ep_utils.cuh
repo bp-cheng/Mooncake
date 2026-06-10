@@ -24,7 +24,7 @@
 
 namespace mooncake {
 
-// VecInt — used by UNROLLED_WARP_COPY and TMA helpers.
+// VecInt is used by UNROLLED_WARP_COPY and TMA helpers.
 template <int kBytes>
 struct VecInt {};
 template <>

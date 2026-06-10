@@ -25,6 +25,8 @@ using mooncake::device::mc_st_na;
 using mooncake::device::mc_ld_acquire;
 using mooncake::device::mc_st_release;
 using mooncake::device::mc_atomic_add_release;
+using mooncake::device::mc_fence;
+using mooncake::device::mc_fence_barrier_fence;
 
 __global__ void mark_phase_ack_kernel(void* mxa_buffer,
                                       const int32_t* nvlink_available,
@@ -79,11 +81,7 @@ void wait_phase_ack(int* ack_buffer, int rank, int num_ranks, int epoch,
 }
 
 template <bool kUseFP8, int kNumWarpGroups, int kNumWarpsPerGroup, int kHidden>
-#ifdef MOONCAKE_EP_USE_MUSA
-__global__ void
-#else
 __global__ EP_LAUNCH_BOUNDS(kNumWarpGroups * kNumWarpsPerGroup * 32, 1) void
-#endif
 dispatch(void* packed_recv_x, float* packed_recv_x_scales,
          int* packed_recv_src_info, int64_t* packed_recv_layout_range,
          int* packed_recv_count, int32_t* active_ranks,
@@ -124,7 +122,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     const size_t num_int4_per_msg = num_bytes_per_msg / sizeof(int4);
     EP_DEVICE_ASSERT(num_bytes_per_msg % sizeof(int4) == 0);
 
-    // Communication context — platform dispatch is inside comm_device.cuh
+    // Communication context: platform dispatch is inside comm_device.cuh.
     const CommCtx comm_ctx = make_comm_ctx(
         mxa_buffer, nvlink_available, ipc_peer_ptrs,
         raddrs, rkeys, qp_devctxs,
@@ -196,14 +194,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
                         rdma_x_vec[i] = *reinterpret_cast<vec_t*>(&int4_value);
                     }
                 }
-#ifdef MOONCAKE_EP_USE_MUSA
-            // MUSA has no named barriers.  Use __syncthreads() for
-            // cross-warp synchronization.  Warp 31 participates via
-            // a matching loop below so all 32 warps reach the barrier.
-            __syncthreads();
-#else
             mc_bar_sync(1, num_threads);
-#endif
 
             // Issue sends
             if (dst_expert_idx >= 0) {
@@ -220,18 +211,14 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
 
                 void* write_dst = mc_route_put(comm_ctx, dst_rank, dst_ptr);
                 if (write_dst != nullptr) {
-                    // Local or P2P path — warp-cooperative copy
+                    // Local or P2P path: warp-cooperative copy.
                     const auto* src_int4_ptr = reinterpret_cast<const int4*>(src_ptr);
                     const auto* dst_int4_ptr = reinterpret_cast<int4*>(write_dst);
-                    // Fence immediately before P2P stores to ensure they
-                    // are issued after all prior operations complete.
-                    // Matches the mc_st_release pattern (fence→store).
-                    EP_DEVICE_FENCE();
+                    mc_fence();
                     UNROLLED_WARP_COPY(8, lane_id, num_int4_per_msg, dst_int4_ptr, src_int4_ptr, mc_ld_nc, mc_st_na);
-                    // All threads wrote to peer memory; all must fence
-                    EP_DEVICE_FENCE();
+                    mc_fence();
                 } else {
-                    // IBGDA path — send directly from source buffer
+                    // IBGDA path: send directly from source buffer.
                     mc_rdma_put(comm_ctx, dst_expert_local_idx % num_qp_per_rank, dst_rank, num_qp_per_rank,
                                       src_ptr, dst_ptr, num_bytes_per_msg, lane_id);
                 }
@@ -287,17 +274,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
             }
         }
     }
-#ifdef MOONCAKE_EP_USE_MUSA
-    // Ensure data-send warps' writes (P2P data + atomic counters) are
-    // visible system-wide before the count-send sub-warps proceed.
-    // MUSA __syncthreads() may not imply a memory fence, so we use the
-    // same fence→barrier→fence pattern as the RECV phase.
-    EP_DEVICE_FENCE();
-    __syncthreads();
-    EP_DEVICE_FENCE();
-#else
-    __syncthreads();
-#endif
+    mc_fence_barrier_fence();
 
     // Issue count sends
     if (responsible_expert_idx < num_experts and sub_warp_id == 0 and lane_id == 0) {
@@ -379,9 +356,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     }
 #ifdef MOONCAKE_EP_USE_MUSA
     // Ensure peer writes are visible before reading: fence, barrier, fence
-    EP_DEVICE_FENCE();
-    __syncthreads();
-    EP_DEVICE_FENCE();
+    mc_fence_barrier_fence();
 #else
     if (responsible_expert_idx < num_experts)
         mc_bar_sync(warp_group_id + 2, kNumWarpsPerGroup * 32);
@@ -392,8 +367,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
 
         // Copy tokens
         EP_DEVICE_ASSERT(num_scales <= 64);
-        // Ensure peer memory writes from other GPUs are visible before reading.
-        EP_DEVICE_FENCE();
+        mc_fence();
         for (int i = sub_warp_id; i < num_recv_tokens; i += kNumWarpsPerGroup) {
             // Copy source info
             const auto src_src_idx = reinterpret_cast<int*>(rdma_recv_x_uint8 + i * num_bytes_per_msg);
@@ -405,8 +379,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
             // NOTES: only 2 load iterations for 7K hidden with 7 unrolls
             const auto src_data = reinterpret_cast<int4*>(reinterpret_cast<uint8_t*>(src_src_idx) + sizeof(int4));
             const auto dst_data = recv_x_int4 + (recv_token_begin_idx + i) * hidden_int4;
-            // Ensure peer writes are visible before each token copy
-            EP_DEVICE_FENCE();
+            mc_fence();
             UNROLLED_WARP_COPY(7, lane_id, hidden_int4, dst_data, src_data, mc_ld_nc, mc_st_na);
 
             // Copy scales
@@ -456,9 +429,7 @@ void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
 #endif
 
 #ifdef MOONCAKE_EP_USE_MUSA
-// Multi-block: split send/recv phases with device sync between them.
-// This tests whether MUSA IPC supports concurrent multi-block writes
-// to peer memory (with proper fences).
+// MUSA split-phase launch: SEND and RECV run as separate kernels.
 #define DISPATCH_LAUNCH_CASE(hidden) { \
 auto dispatch_func = use_fp8 ? dispatch<true, kNumWarpGroups, kNumWarpsPerGroup, hidden> : \
                                dispatch<false, kNumWarpGroups, kNumWarpsPerGroup, hidden>; \
@@ -530,11 +501,7 @@ LAUNCH_KERNEL(&cfg, dispatch_func, \
 }
 
 template <int kNumWarpGroups, int kNumWarpsPerGroup, int kHidden, int kNumMaxTopk>
-#ifdef MOONCAKE_EP_USE_MUSA
-__global__ void
-#else
 __global__ EP_LAUNCH_BOUNDS(kNumWarpGroups * kNumWarpsPerGroup * 32, 1) void
-#endif
 combine(void* combined_x, int32_t* active_ranks,
         void* mxa_buffer,
         int* rdma_send_signal_buffer, int* rdma_recv_signal_buffer,
@@ -569,7 +536,7 @@ combine(void* combined_x, int32_t* active_ranks,
     constexpr size_t num_bytes_per_slot = kHidden * sizeof(nv_bfloat16);
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
 
-    // Communication context — platform dispatch is inside comm_device.cuh
+    // Communication context: platform dispatch is inside comm_device.cuh.
     const CommCtx comm_ctx = make_comm_ctx(
         mxa_buffer, nvlink_available, ipc_peer_ptrs,
         raddrs, rkeys, qp_devctxs,
@@ -626,13 +593,12 @@ combine(void* combined_x, int32_t* active_ranks,
 
             void* write_dst = mc_route_put(comm_ctx, dst_rank, dst_ptr);
             if (write_dst != nullptr) {
-                // Local or P2P path — warp-cooperative copy
+                // Local or P2P path: warp-cooperative copy.
                 const auto dst_int4_ptr = reinterpret_cast<int4*>(write_dst);
                 UNROLLED_WARP_COPY(7, lane_id, hidden_bf16_int4, dst_int4_ptr, x_int4, mc_ld_nc, mc_st_na);
-                // All threads wrote to peer memory; all must fence
-                EP_DEVICE_FENCE();
+                mc_fence();
             } else {
-                // IBGDA path — stage to send buffer then RDMA write
+                // IBGDA path: stage to send buffer then RDMA write.
                 const auto buf_int4_ptr = reinterpret_cast<int4*>(buf_ptr);
                 if (not zero_copy)
                     UNROLLED_WARP_COPY(7, lane_id, hidden_bf16_int4, buf_int4_ptr, x_int4, mc_ld_nc, mc_st_na);
@@ -646,11 +612,10 @@ combine(void* combined_x, int32_t* active_ranks,
     // Put finishing flag
     // On MUSA, __syncthreads() must be called by all threads in the block,
     // so we move it outside the if (responsible_expert_idx < num_experts) guard.
-    // Also, EP_DEVICE_FENCE() must be called by ALL threads that did
+    // Also, mc_fence() must be called by ALL threads that did
     // writes (not just the signaling thread) to make P2P stores visible.
 #ifdef MOONCAKE_EP_USE_MUSA
-    EP_DEVICE_FENCE();
-    __syncthreads();
+    mc_fence_barrier_fence();
 #endif
     if (responsible_expert_idx < num_experts) {
         EP_STATIC_ASSERT(kNumWarpsPerGroup > 1, "Requires more than one warp per group");
@@ -693,11 +658,10 @@ combine(void* combined_x, int32_t* active_ranks,
         }
     }
 #ifdef MOONCAKE_EP_USE_MUSA
-    // mc_grid_sync() is a no-op on MUSA; use double __syncthreads()
-    // with EP_DEVICE_FENCE() to ensure all threads see peer writes
-    // before any thread starts reduction.
+    // mc_grid_sync() is a no-op on MUSA; use a block-wide fence/barrier before
+    // reduction so threads see peer writes.
     __syncthreads();
-    EP_DEVICE_FENCE();
+    mc_fence();
     __syncthreads();
 #else
     mc_grid_sync();
@@ -708,8 +672,7 @@ combine(void* combined_x, int32_t* active_ranks,
     EP_STATIC_ASSERT(kHidden % (32 * kNumElemsPerInt4) == 0, "Invalid vectorization");
     if (thread_id < hidden_bf16_int4) {
         for (int token_idx = sm_id; token_idx < num_combined_tokens; token_idx += num_sms) {
-            // Ensure peer memory writes from other GPUs are visible before each token
-            EP_DEVICE_FENCE();
+            mc_fence();
             // Read top-k indices and weights
             int reg_topk_idx[kNumMaxTopk];
             float reg_topk_weights[kNumMaxTopk];

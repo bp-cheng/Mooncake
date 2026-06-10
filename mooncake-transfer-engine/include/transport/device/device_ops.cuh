@@ -1,8 +1,8 @@
-// Device-side memory ordering primitives — platform-portable selector.
+// Device-side memory ordering primitives: platform-portable selector.
 //
-// This is the ONLY file in the device API that contains a platform #ifdef.
-// All other device API headers include this file and use the mc_* functions.
-// The kernel itself has zero platform #ifdef branches.
+// Keep low-level device memory-ordering differences behind mc_* primitives.
+// EP kernels should use these helpers instead of open-coding CUDA/MUSA
+// load/store/fence details.
 #pragma once
 
 #ifdef MOONCAKE_EP_USE_MUSA

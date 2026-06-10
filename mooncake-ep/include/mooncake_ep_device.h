@@ -1,13 +1,13 @@
 #pragma once
 // ============================================================================
-// mooncake_ep_device.h — Unified CUDA/MUSA compatibility header
+// mooncake_ep_device.h - Unified CUDA/MUSA compatibility header
 // ============================================================================
 // Device-compatible types and macros only (no ATen / libtorch).
 // ATen type aliases (DeviceStream, kDeviceType, etc.) are in
 // mooncake_ep_event.h.
 // ============================================================================
 
-// NOTE: mooncake_ep_exception.cuh is NOT included here — it is always
+// NOTE: mooncake_ep_exception.cuh is NOT included here; it is always
 // included by the translation unit before this header (via kernel .cu or
 // mooncake_ep_buffer.h).  Including it here would cause EPException
 // redefinition when torchada's simple_porting creates include_musa/ copies
@@ -16,11 +16,11 @@
 #ifdef MOONCAKE_EP_USE_MUSA
 
 // ---- MUSA platform --------------------------------------------------------
-#include "cuda_alike.h"       // cuda* → musa* runtime API mapping
+#include "cuda_alike.h"       // cuda* to musa* runtime API mapping
 #include <musa_bf16.h>        // mt_bfloat16
 #include <musa_runtime.h>     // musaStream_t, musaError_t, etc.
 
-// -- Stream type alias (musaStream_t → cudaStream_t) ------------------------
+// -- Stream type alias (musaStream_t to cudaStream_t) ------------------------
 typedef musaStream_t cudaStream_t;
 
 // -- bfloat16 -----------------------------------------------------------------
@@ -73,9 +73,6 @@ __forceinline__ __device__ int get_lane_id() { return threadIdx.x % 32; }
         }                                                              \
     }
 
-// -- Memory fence (MUSA needs explicit fences for peer visibility) -----------
-#define EP_DEVICE_FENCE()  __threadfence_system()
-
 // -- Unified error checking (cuda_alike.h maps cudaError_t/cudaGetErrorString/cudaSuccess) --
 #define EP_CHECK(cmd)                                              \
     do {                                                           \
@@ -122,9 +119,6 @@ __forceinline__ __device__ int get_lane_id() {
 
 #define LAUNCH_KERNEL(config, kernel, ...) \
     EP_CHECK(cudaLaunchKernelEx(config, kernel, ##__VA_ARGS__))
-
-// -- Memory fence (no-op on CUDA) --------------------------------------------
-#define EP_DEVICE_FENCE()  do {} while (0)
 
 // -- Unified error checking (native CUDA names) ------------------------------
 #define EP_CHECK(cmd)                                              \

@@ -6,11 +6,11 @@
 // visibility.
 //
 // Known MUSA SDK 4.3.3 compiler bugs to avoid:
-//   - atomicAdd_system / atomicCAS_system → infinite SelectionDAG loop.
+//   - atomicAdd_system / atomicCAS_system: infinite SelectionDAG loop.
 //     Use block-scope atomicAdd + __threadfence_system() instead.
-//   - Named barriers (bar.sync) → not available; use __syncthreads().
-//   - cooperative_groups::this_grid().sync() → not available; host uses
-//     separate kernel launches (return_recv_hook=true) so grid sync is a no-op.
+//   - Named barriers (bar.sync): not available; use __syncthreads().
+//   - cooperative_groups::this_grid().sync(): not available. MUSA EP uses
+//     split SEND/RECV launches plus a device phase ack, so grid sync is a no-op.
 #pragma once
 
 #include <musa_runtime.h>
@@ -57,7 +57,7 @@ __device__ __forceinline__ void mc_st_release_u64(const uint64_t* ptr,
 }
 
 // ---------------------------------------------------------------------------
-// Atomic add — block-scope atomicAdd + system fence (avoids SDK bug)
+// Atomic add: block-scope atomicAdd + system fence (avoids SDK bug)
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ int mc_atomic_add_release(const int* ptr, int val) {
     __threadfence_system();
@@ -67,7 +67,7 @@ __device__ __forceinline__ int mc_atomic_add_release(const int* ptr, int val) {
 }
 
 // ---------------------------------------------------------------------------
-// Non-coherent loads — MUSA has no nc/no_allocate cache hints; use volatile.
+// Non-coherent loads: MUSA has no nc/no_allocate cache hints; use volatile.
 // int4 volatile copy not supported by MUSA compiler; copy field-by-field.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ int4 mc_ld_nc(const int4* ptr) {
@@ -93,7 +93,7 @@ __device__ __forceinline__ int64_t mc_ld_nc_s64(const int64_t* ptr) {
 }
 
 // ---------------------------------------------------------------------------
-// Non-temporal stores — MUSA has no nt/no_allocate hints; plain store.
+// Non-temporal stores: MUSA has no nt/no_allocate hints; plain store.
 // int4 volatile assignment not supported by MUSA compiler; copy field-by-field.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_st_na(const int4* ptr, const int4& val) {
@@ -105,7 +105,7 @@ __device__ __forceinline__ void mc_st_na(const int4* ptr, const int4& val) {
 }
 
 // ---------------------------------------------------------------------------
-// Named barrier — MUSA has no bar.sync.
+// Named barrier: MUSA has no bar.sync.
 // On MUSA, mc_bar_sync is implemented as __syncthreads() (full CTA barrier).
 // Kernels that call mc_bar_sync from a subset of threads must ensure the
 // remaining threads call it the same number of times from another code path.
@@ -117,13 +117,13 @@ __device__ __forceinline__ void mc_bar_sync(int /*bar_id*/,
 }
 
 // ---------------------------------------------------------------------------
-// Grid sync — not available on MUSA.  Host always uses separate kernel
-// launches, so SEND and RECV never share a kernel invocation.  No-op.
+// Grid sync: not available on MUSA. SEND and RECV never share a kernel
+// invocation on the MUSA path, so this is a no-op.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_grid_sync() {}
 
 // ---------------------------------------------------------------------------
-// System-level memory fence — MUSA requires explicit __threadfence_system()
+// System-level memory fence: MUSA requires explicit __threadfence_system()
 // for cross-GPU (MTLink) visibility.  CUDA hardware guarantees this without
 // explicit fences, so mc_fence() is a no-op there.
 // ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ __device__ __forceinline__ void mc_fence() {
 }
 
 // ---------------------------------------------------------------------------
-// Fence → barrier → fence: ensures all threads' writes are globally visible
+// Fence/barrier/fence: ensures all threads' writes are globally visible
 // before any thread proceeds.  On MUSA, __syncthreads() does NOT imply a
 // memory fence, so explicit fences are needed on both sides.
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ __device__ __forceinline__ void mc_fence_barrier_fence() {
 }
 
 // ---------------------------------------------------------------------------
-// Byte-swap helpers — MUSA has no __byte_perm; implement manually.
+// Byte-swap helpers: MUSA has no __byte_perm; implement manually.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ uint16_t mc_bswap16(uint16_t x) {
     return (uint16_t)(((x & 0x00FFu) << 8) | ((x & 0xFF00u) >> 8));
