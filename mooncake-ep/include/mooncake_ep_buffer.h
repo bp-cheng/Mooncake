@@ -183,7 +183,8 @@ struct MooncakeEpBuffer {
         const std::vector<std::vector<int32_t>>& remote_handles,
         const std::vector<int>& active_ranks_mask);
 
-    // Verify P2P peer access works (host-side memcpy test).
+    // Debug-only host-side memcpy test. This writes test bytes into peer-mapped
+    // EP buffers, so do not call it in the default connect/runtime path.
     bool verify_peer_access() {
         return p2p_transport_ && p2p_transport_->verifyPeerAccess();
     }
