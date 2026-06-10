@@ -2,6 +2,7 @@
 #define MOONCAKE_BACKEND_H
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -217,6 +218,7 @@ class MooncakeBackend final : public ::c10d::ProcessGroup {
     void syncActiveRanksTensor();
 
     static TransferEngine* engine_;
+    static std::atomic<int> activeBackendCount_;
     std::shared_ptr<MooncakeWorker> worker_;
     static bool engineInitialized_;
     static int backendIndex_;
@@ -235,6 +237,7 @@ class MooncakeBackend final : public ::c10d::ProcessGroup {
     SegmentInfo rank_info;
     std::shared_ptr<TransferGroupMeta> meta_;
     bool isShutdown_{false};
+    bool counted_{false};
     uint64_t local2global_rank_map_[kMaxNumRanks];
     std::string localServerName_;
 

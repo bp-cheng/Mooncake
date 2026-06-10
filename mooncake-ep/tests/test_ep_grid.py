@@ -19,11 +19,13 @@ if _USE_MUSA:
     _set_device = torch_musa.set_device
     _device_count = torch_musa.device_count
     _DEVICE = "musa"
+    _DEFAULT_DEVICE_FILTER = "mlx5_2"
 else:
     _sync = torch.cuda.synchronize
     _set_device = torch.cuda.set_device
     _device_count = torch.cuda.device_count
     _DEVICE = "cuda"
+    _DEFAULT_DEVICE_FILTER = "mlx5_1,mlx5_2,mlx5_3,mlx5_4"
 
 
 def dequantize_fp8(x_fp8: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
@@ -193,25 +195,23 @@ def run_test_iteration(
     )
 
     _sync()
+    if fail_rank == -1:
+        dist.barrier(group)
 
 
 def worker(rank, world_size, config_dict):
     _set_device(rank)
     torch.set_default_dtype(torch.bfloat16)
 
-    # Device filter: constrain to a single HCA to avoid cross-NIC
-    # address-resolution failures on multi-NIC hosts (e.g. MT S5000).
+    # Device filter: MUSA defaults to one known-good HCA on MT; CUDA keeps the
+    # original multi-HCA default unless DEVICE_FILTER is set by the caller.
     device_filter = [
-        f
-        for f in os.getenv("DEVICE_FILTER", "mlx5_2").split(",")
-        if f
+        f for f in os.getenv("DEVICE_FILTER", _DEFAULT_DEVICE_FILTER).split(",") if f
     ]
     if device_filter:
         pg.set_device_filter(device_filter)
 
-    backend = "mooncake"
-
-    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    dist.init_process_group(backend="mooncake", rank=rank, world_size=world_size)
     group = dist.group.WORLD
 
     try:
@@ -225,26 +225,13 @@ def worker(rank, world_size, config_dict):
         traceback.print_exc()
         raise
 
-    if _USE_MUSA:
-        # Mooncake PG's MUSA backend can segfault during Python interpreter
-        # teardown after a successful test.  Exit the worker after all device
-        # work is synchronized so grid tests report the EP result instead of a
-        # backend cleanup artifact.
-        os._exit(0)
-
     if config_dict.get("fail_rank", -1) != -1:
         # Survivor: skip destroy_process_group (would hang) and exit hard.
-        # PG backend background threads (ConnectionPoller, WorkerThread)
-        # won't stop without destroy_process_group, so os._exit(0) is the
-        # only way to ensure the process terminates before the next test.
+        # The failed rank exits before participating in teardown.
         os._exit(0)
 
     if config_dict.get("fail_rank", -1) == -1:
-        try:
-            dist.destroy_process_group()
-        except RuntimeError as e:
-            if not _USE_MUSA or "No backend type associated with device type musa" not in str(e):
-                raise
+        dist.destroy_process_group()
 
 
 class TestMooncakeEPBuffer(unittest.TestCase):
@@ -261,7 +248,7 @@ class TestMooncakeEPBuffer(unittest.TestCase):
             os.environ["MOONCAKE_EP_DISABLE_IBGDA"] = "1"
         # Constrain EP to a single HCA to avoid cross-NIC address-resolution
         # failures on multi-NIC hosts (e.g. MT S5000).
-        if "MOONCAKE_EP_DEVICE_FILTER" not in os.environ:
+        if _USE_MUSA and "MOONCAKE_EP_DEVICE_FILTER" not in os.environ:
             os.environ["MOONCAKE_EP_DEVICE_FILTER"] = os.getenv(
                 "DEVICE_FILTER", "mlx5_2"
             )
@@ -343,13 +330,9 @@ def generate_tests():
         # probe, automatic failed-rank exclusion).  No need to skip fail_rank
         # tests on MUSA.
 
-        # Fallback path uses dist.all_gather (collective), incompatible with
-        # fail_rank (rank 1 has os._exit(0) and cannot participate).
-        if raw_dict["use_fallback"] and raw_dict["fail_rank"] != -1:
-            continue
-
-        # MUSA does not support FP8 in the kernel
-        if _USE_MUSA and raw_dict["use_fp8"]:
+        # MUSA fast-path kernels do not support FP8 yet; fallback FP8 is a
+        # Python/torch path and is covered.
+        if _USE_MUSA and raw_dict["use_fp8"] and not raw_dict["use_fallback"]:
             continue
 
         # Flatten
