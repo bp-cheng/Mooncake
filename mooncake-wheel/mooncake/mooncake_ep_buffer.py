@@ -340,8 +340,6 @@ class Buffer:
             packed_recv_src_info,
             packed_recv_layout_range,
         )
-        hook = self._wrap_hook_musa(hook) if (_USE_MUSA and hook) else hook
-
         return (
             (packed_recv_x, packed_recv_x_scales) if use_fp8 else packed_recv_x,
             packed_recv_count,
@@ -424,34 +422,11 @@ class Buffer:
             layout_range,
             combined_x,
         )
-        hook = self._wrap_hook_musa(hook) if (_USE_MUSA and hook) else hook
-
         return (
             combined_x,
             EventOverlap(event, tensors_to_record if async_finish else None),
             hook,
         )
-
-    def _wrap_hook_musa(self, hook):
-        """On MUSA, wrap the RECV hook to add a host-side barrier + device sync.
-
-        This ensures all ranks' SEND kernels are complete and P2P writes are
-        visible before any rank starts its RECV kernel.  Without this, MTLink
-        P2P writes may not be visible to peer devices because MUSA has no
-        cooperative launch / grid sync.
-        """
-        skip_barrier = os.environ.get("MOONCAKE_EP_MUSA_SKIP_HOOK_BARRIER") == "1"
-        import torch_musa
-
-        def wrapped():
-            # Synchronize the device to ensure SEND kernel is complete
-            torch_musa.synchronize()
-            # Barrier so all ranks finish SEND before any starts RECV
-            if not skip_barrier:
-                dist.barrier(self.group)
-            hook()
-
-        return wrapped
 
     def get_next_combine_buffer(self, handle: object):
         (
