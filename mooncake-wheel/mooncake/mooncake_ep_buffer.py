@@ -850,14 +850,10 @@ class Buffer:
                         weights = (w_rows * mask).sum(dim=1).view(-1, 1)
                         send_buf[src_rank, tokens_valid] += contrib_valid * weights
 
-            # All-reduce then take local slice (only valid tokens)
-            # MUSA/gloo: all_reduce requires CPU tensors
-            if _USE_MUSA:
-                send_buf_cpu = send_buf.cpu()
-                dist.all_reduce(send_buf_cpu, group=self.group)
-                send_buf = send_buf_cpu.to(send_buf.device)
-            else:
-                dist.all_reduce(send_buf, group=self.group)
+            # All-reduce then take local slice (only valid tokens).
+            # Mooncake PG supports MUSA device tensors; avoid CPU round-trips
+            # here because CPU->MUSA copies can hang after the CPU collective.
+            dist.all_reduce(send_buf, group=self.group)
             combined_x = send_buf[self.rank, :num_tokens]
 
             # Write to out if provided
