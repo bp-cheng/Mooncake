@@ -352,6 +352,12 @@ def generate_tests():
         if _USE_MUSA and raw_dict["use_fp8"]:
             continue
 
+        # MT validation target is the P2P fast path.  The Python fallback path
+        # is not part of the MUSA coverage here and can trip torch_musa CPU↔MUSA
+        # copies after prior failed-rank teardown.
+        if _USE_MUSA and raw_dict["use_fallback"]:
+            continue
+
         # MUSA: cooperative launch not supported, so return_recv_hook is forced
         # True; async_finish + return_recv_hook is invalid, skip async_finish
         if _USE_MUSA and raw_dict["async_finish"]:
