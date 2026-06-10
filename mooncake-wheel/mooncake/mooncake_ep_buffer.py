@@ -7,10 +7,6 @@ _USE_MUSA = os.getenv("MOONCAKE_EP_USE_MUSA", "").upper() in {"1", "ON", "TRUE",
 _DEVICE = "musa" if _USE_MUSA else "cuda"
 
 
-def _all_ranks_active(num_ranks: int) -> List[int]:
-    return [1] * num_ranks
-
-
 def _backend_active_ranks(group: dist.ProcessGroup) -> torch.Tensor:
     try:
         from mooncake.pg import get_active_ranks
@@ -18,6 +14,10 @@ def _backend_active_ranks(group: dist.ProcessGroup) -> torch.Tensor:
         return get_active_ranks(group)
     except (ImportError, AttributeError, TypeError, RuntimeError):
         return torch.ones(dist.get_world_size(group), dtype=torch.int32, device="cpu")
+
+
+def _backend_active_ranks_mask(group: dist.ProcessGroup) -> List[int]:
+    return _backend_active_ranks(group).to(device="cpu", dtype=torch.int32).tolist()
 
 
 class EventOverlap:
@@ -186,9 +186,10 @@ class Buffer:
             dist.all_gather(interface_ids_list, interface_id_t, self.group)
             interface_ids = torch.cat(interface_ids_list).tolist()
 
+            active_ranks_mask = _backend_active_ranks_mask(self.backend)
             self.runtime.sync_ibgda_peers(
                 raddrs, rkeys, remote_qpns, remote_lids,
-                subnet_prefixes, interface_ids, _all_ranks_active(self.group_size)
+                subnet_prefixes, interface_ids, active_ranks_mask
             )
 
         # P2P/NVLink IPC handle exchange — skip entirely when disabled.
@@ -211,8 +212,9 @@ class Buffer:
                 ]
                 dist.all_gather(handles, local_handle_tensor, self.group)
                 remote_handles = [h.cpu().tolist() for h in handles]
+                active_ranks_mask = _backend_active_ranks_mask(self.backend)
                 self.runtime.sync_nvlink_ipc_handles(remote_handles,
-                                                     _all_ranks_active(self.group_size))
+                                                     active_ranks_mask)
             except Exception as e:
                 import warnings
 
