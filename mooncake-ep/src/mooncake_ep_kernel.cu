@@ -26,6 +26,58 @@ using mooncake::device::mc_ld_acquire;
 using mooncake::device::mc_st_release;
 using mooncake::device::mc_atomic_add_release;
 
+__global__ void mark_phase_ack_kernel(void* mxa_buffer,
+                                      const int32_t* nvlink_available,
+                                      void* const* ipc_peer_ptrs,
+                                      int* ack_buffer, int rank,
+                                      int num_ranks, int epoch) {
+    const int peer = static_cast<int>(threadIdx.x);
+    if (peer >= num_ranks)
+        return;
+
+    const CommCtx comm_ctx = make_comm_ctx(
+        mxa_buffer, nvlink_available, ipc_peer_ptrs, nullptr, nullptr, nullptr,
+        ack_buffer, ack_buffer, rank, num_ranks, MAX_QP_COUNT);
+
+    if (peer == rank) {
+        mc_st_release(ack_buffer + rank, epoch);
+        return;
+    }
+
+    void* dst = mc_route_put(comm_ctx, peer, ack_buffer + rank);
+    if (dst != nullptr)
+        mc_st_release(reinterpret_cast<int*>(dst), epoch);
+}
+
+__global__ void wait_phase_ack_kernel(int* ack_buffer, int rank, int num_ranks,
+                                      int epoch, int64_t timeout_ticks) {
+    const int peer = static_cast<int>(threadIdx.x);
+    if (peer >= num_ranks || peer == rank)
+        return;
+
+    unsigned long long start_time = clock64();
+    while (mc_ld_acquire(ack_buffer + peer) < epoch) {
+        unsigned long long end_time = clock64();
+        if (timeout_ticks != -1 && end_time - start_time > timeout_ticks)
+            return;
+    }
+}
+
+void mark_phase_ack(void* mxa_buffer, const int32_t* nvlink_available,
+                    void* const* ipc_peer_ptrs, int* ack_buffer, int rank,
+                    int num_ranks, int epoch, cudaStream_t stream) {
+    SETUP_LAUNCH_CONFIG(1, 32, stream);
+    LAUNCH_KERNEL(&cfg, mark_phase_ack_kernel, mxa_buffer, nvlink_available,
+                  ipc_peer_ptrs, ack_buffer, rank, num_ranks, epoch);
+}
+
+void wait_phase_ack(int* ack_buffer, int rank, int num_ranks, int epoch,
+                    cudaStream_t stream, int64_t timeout_ticks) {
+    SETUP_LAUNCH_CONFIG(1, 32, stream);
+    LAUNCH_KERNEL(&cfg, wait_phase_ack_kernel, ack_buffer, rank, num_ranks,
+                  epoch, timeout_ticks);
+}
+
 template <bool kUseFP8, int kNumWarpGroups, int kNumWarpsPerGroup, int kHidden>
 #ifdef MOONCAKE_EP_USE_MUSA
 __global__ void
