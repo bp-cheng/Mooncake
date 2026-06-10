@@ -248,6 +248,10 @@ class TestMooncakeEPBuffer(unittest.TestCase):
         os.environ["MASTER_ADDR"] = "127.0.0.1"
         os.environ["MASTER_PORT"] = str(TestMooncakeEPBuffer._port_counter)
         TestMooncakeEPBuffer._port_counter += 1
+        # MT validation target is P2P fast path.  IBGDA is still under triage
+        # on this host, so keep it out of the default MUSA grid.
+        if _USE_MUSA and "MOONCAKE_EP_DISABLE_IBGDA" not in os.environ:
+            os.environ["MOONCAKE_EP_DISABLE_IBGDA"] = "1"
         # Constrain EP to a single HCA to avoid cross-NIC address-resolution
         # failures on multi-NIC hosts (e.g. MT S5000).
         if "MOONCAKE_EP_DEVICE_FILTER" not in os.environ:

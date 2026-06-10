@@ -5,6 +5,14 @@
 
 namespace mooncake {
 
+static bool envFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value) return false;
+    std::string s(value);
+    return s == "1" || s == "ON" || s == "on" || s == "TRUE" || s == "true" ||
+           s == "YES" || s == "yes";
+}
+
 // Initialize an RDMA transport: register memory, allocate control buffer,
 // create QPs.  Returns true on success, false if IBGDA is unavailable.
 static bool initRdmaTransport(device::RdmaTransport* t, void* gdr_buffer,
@@ -23,19 +31,18 @@ static bool initRdmaTransport(device::RdmaTransport* t, void* gdr_buffer,
     return ret == 0;
 }
 
-MooncakeEpBuffer::MooncakeEpBuffer(
-    int rank, int num_ranks, int64_t num_ep_buffer_bytes,
-    TransferEngine* engine)
+MooncakeEpBuffer::MooncakeEpBuffer(int rank, int num_ranks,
+                                   int64_t num_ep_buffer_bytes,
+                                   TransferEngine* engine)
     : rank(rank),
       num_ranks(num_ranks),
       num_ep_buffer_bytes(num_ep_buffer_bytes),
-      comm_stream(EP_GET_STREAM_FROM_POOL(true))
-{
+      comm_stream(EP_GET_STREAM_FROM_POOL(true)) {
     USE_QP_COUNT = MAX_QP_COUNT / num_ranks * num_ranks;
 
     CUDA_CHECK(cudaGetDevice(&device_id));
-    CUDA_CHECK(cudaDeviceGetAttribute(&clock_rate_khz,
-                                      cudaDevAttrClockRate, device_id));
+    CUDA_CHECK(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate,
+                                      device_id));
 
     // P2P transport — owns GDR buffer allocation and IPC handle exchange.
     if (engine) {
@@ -52,12 +59,17 @@ MooncakeEpBuffer::MooncakeEpBuffer(
     CUDA_CHECK(cudaMemset(gdr_buffer, 0, num_ep_buffer_bytes));
 
     // RDMA transport — optional; disabled if init fails.
-    if (engine) {
+    const bool disable_ibgda = envFlagEnabled("MOONCAKE_EP_DISABLE_IBGDA");
+    if (disable_ibgda) {
+        ibgda_disabled_ = true;
+        LOG(INFO) << "[EP] IBGDA disabled by MOONCAKE_EP_DISABLE_IBGDA, "
+                     "using P2P-only path";
+    } else if (engine) {
         rdma_transport_ = engine->getOrCreateRdmaTransport();
         if (rdma_transport_) {
             if (!initRdmaTransport(rdma_transport_, gdr_buffer,
-                                   num_ep_buffer_bytes, num_ranks,
-                                   USE_QP_COUNT, comm_stream.stream())) {
+                                   num_ep_buffer_bytes, num_ranks, USE_QP_COUNT,
+                                   comm_stream.stream())) {
                 rdma_transport_ = nullptr;
                 ibgda_disabled_ = true;
                 LOG(INFO) << "[EP] IBGDA unavailable, using P2P-only path";
@@ -66,7 +78,8 @@ MooncakeEpBuffer::MooncakeEpBuffer(
             ibgda_disabled_ = true;
         }
     } else {
-        // Read optional NIC whitelist from env var (same convention as PG tests).
+        // Read optional NIC whitelist from env var (same convention as PG
+        // tests).
         std::vector<std::string> device_filter;
         if (const char* env = std::getenv("MOONCAKE_EP_DEVICE_FILTER")) {
             std::string s(env);
@@ -78,8 +91,7 @@ MooncakeEpBuffer::MooncakeEpBuffer(
         }
         auto t = device::createIbgdaDeviceTransport(device_filter);
         if (initRdmaTransport(t.get(), gdr_buffer, num_ep_buffer_bytes,
-                              num_ranks, USE_QP_COUNT,
-                              comm_stream.stream())) {
+                              num_ranks, USE_QP_COUNT, comm_stream.stream())) {
             owned_rdma_transport_ = std::move(t);
             rdma_transport_ = owned_rdma_transport_.get();
         } else {
@@ -95,8 +107,8 @@ MooncakeEpBuffer::MooncakeEpBuffer(
 }
 
 MooncakeEpBuffer::~MooncakeEpBuffer() noexcept(false) {
-    // When EP owns the rdma transport, destructor handles QP/MR/ctrl_buf teardown.
-    // When engine owns it, just clear the pointer.
+    // When EP owns the rdma transport, destructor handles QP/MR/ctrl_buf
+    // teardown. When engine owns it, just clear the pointer.
     owned_rdma_transport_.reset();
     rdma_transport_ = nullptr;
 
@@ -211,8 +223,8 @@ MooncakeEpBuffer::dispatch(const torch::Tensor& x,
             rkeys_ptr, qp_devctxs_ptr, nvlink_avail, ipc_ptrs, x.data_ptr(),
             topk_idx.data_ptr<int64_t>(), next_buffer.rdma_recv_signal_buffer,
             num_tokens, hidden, num_max_dispatch_tokens_per_rank, num_topk,
-            num_experts, rank, num_ranks, use_fp8, workspace, launch_stream.stream(),
-            timeout_ticks, phases);
+            num_experts, rank, num_ranks, use_fp8, workspace,
+            launch_stream.stream(), timeout_ticks, phases);
     };
     launcher(return_recv_hook
                  ? LOW_LATENCY_SEND_PHASE
@@ -415,7 +427,8 @@ void MooncakeEpBuffer::sync_ibgda_peers(
         flat_lids, subnet_prefixes, interface_ids, active_ranks_mask);
     if (ret != 0) {
         ibgda_disabled_ = true;
-        LOG(WARNING) << "[EP] IBGDA connectPeers failed, falling back to P2P-only path";
+        LOG(WARNING)
+            << "[EP] IBGDA connectPeers failed, falling back to P2P-only path";
     }
 }
 

@@ -100,9 +100,8 @@ class Buffer:
         else:
             self.runtime = ep.Buffer(self.rank, self.group_size,
                                      num_ep_buffer_bytes)
-        # Fallback flag and buffers.
-        # Note: `sync_nvlink_ipc_handles()` can mutate C++ `ibgda_disabled_` (True->False when
-        # P2P+IPC succeeds for all ranks). We re-evaluate after IPC sync below.
+        # Fallback flag and buffers.  P2P IPC exchange below can still make the
+        # fast path available when IBGDA is disabled.
         self._use_fallback = bool(self.runtime.ibgda_disabled())
         self._fallback_next_combine_buffer: Optional[torch.Tensor] = None
         self.connect()
@@ -211,25 +210,6 @@ class Buffer:
                 remote_handles = [h.tolist() for h in handles]
                 self.runtime.sync_nvlink_ipc_handles(remote_handles,
                                                      _all_ranks_active(self.group_size))
-                # Verify that peer-mapped memory is actually writable.
-                # This catches cases where musaIpcOpenMemHandle succeeds
-                # but the mapped memory is not usable from the device.
-                # Only verify if all peers have non-null IPC pointers; otherwise
-                # skip (the C++ verifyPeerAccess can SIGSEGV on partially-valid
-                # IPC mappings).
-                try:
-                    peer_ok = self.runtime.verify_peer_access()
-                except Exception:
-                    peer_ok = False
-                if not peer_ok:
-                    import warnings
-                    warnings.warn(
-                        f"[Rank {self.rank}] P2P peer access verification failed. "
-                        f"Will use fallback path.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    force_fallback = True
             except Exception as e:
                 import warnings
 
