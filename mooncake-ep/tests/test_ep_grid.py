@@ -330,11 +330,6 @@ def generate_tests():
         # probe, automatic failed-rank exclusion).  No need to skip fail_rank
         # tests on MUSA.
 
-        # MUSA fast-path kernels do not support FP8 yet; fallback FP8 is a
-        # Python/torch path and is covered.
-        if _USE_MUSA and raw_dict["use_fp8"] and not raw_dict["use_fallback"]:
-            continue
-
         # Flatten
         config_dict = {}
         for k, v in raw_dict.items():

@@ -112,7 +112,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     constexpr int kNumPerChannels = 128;
     constexpr float kFP8Margin = 1e-4, kFP8Amax = 448, kFP8AmaxInv = 1.0f / 448.0f;
     const int num_scales = kHidden / kNumPerChannels;
-    const size_t hidden_bytes = kHidden * (kUseFP8 ? sizeof(__nv_fp8_storage_t) : sizeof(nv_bfloat16));
+    const size_t hidden_bytes = kHidden * (kUseFP8 ? sizeof(ep_fp8_storage_t) : sizeof(nv_bfloat16));
     const size_t hidden_int4 = hidden_bytes / sizeof(int4);
 
     // Message package: hidden data, FP8 scales, index at source
@@ -182,11 +182,11 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
 
                         // Cast into send buffer
                         vec_t int2_value;
-                        auto fp8x2_values = reinterpret_cast<__nv_fp8x2_storage_t*>(&int2_value);
+                        auto fp8x2_values = reinterpret_cast<ep_fp8x2_storage_t*>(&int2_value);
                         #pragma unroll
                         for (int j = 0; j < kNumElemsPerRead; j += 2) {
                             float2 fp32x2 = {fp32_values[j] * scale, fp32_values[j + 1] * scale};
-                            fp8x2_values[j / 2] = __nv_cvt_float2_to_fp8x2(fp32x2, __NV_SATFINITE, __NV_E4M3);
+                            fp8x2_values[j / 2] = ep_cvt_float2_to_fp8x2(fp32x2);
                         }
                         rdma_x_vec[i] = int2_value;
                     } else {
@@ -423,10 +423,6 @@ void dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     auto atomic_counter_per_expert = reinterpret_cast<int*>(workspace);
     auto atomic_finish_counter_per_expert = atomic_counter_per_expert + num_experts;
     EP_HOST_ASSERT(num_experts * sizeof(int) * 2 <= NUM_WORKSPACE_BYTES);
-
-#ifdef MOONCAKE_EP_USE_MUSA
-    EP_HOST_ASSERT(!use_fp8 && "MUSA does not support FP8");
-#endif
 
 #ifdef MOONCAKE_EP_USE_MUSA
 // MUSA split-phase launch: SEND and RECV run as separate kernels.

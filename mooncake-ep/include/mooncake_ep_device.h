@@ -18,6 +18,7 @@
 // ---- MUSA platform --------------------------------------------------------
 #include "cuda_alike.h"       // cuda* to musa* runtime API mapping
 #include <musa_bf16.h>        // mt_bfloat16
+#include <musa_fp8.h>         // __mt_fp8_* storage and conversion helpers
 #include <musa_runtime.h>     // musaStream_t, musaError_t, etc.
 
 // -- Stream type alias (musaStream_t to cudaStream_t) ------------------------
@@ -32,14 +33,13 @@ using nv_bfloat16 = mt_bfloat16;
 struct nv_bfloat16 { unsigned short __x; };
 #endif
 
-// -- FP8 stubs (MUSA has no FP8; templates compile but never instantiated) ---
-using __nv_fp8_storage_t = uint8_t;
-using __nv_fp8x2_storage_t = uint16_t;
-#define __NV_SATFINITE 0
-#define __NV_E4M3 0
+// -- FP8 ----------------------------------------------------------------------
+using ep_fp8_storage_t = __mt_fp8_storage_t;
+using ep_fp8x2_storage_t = __mt_fp8x2_storage_t;
 #if defined(__CUDACC__) || defined(__MCC__)
-__device__ __forceinline__ __nv_fp8x2_storage_t __nv_cvt_float2_to_fp8x2(
-    float2, int, int) { return 0; }
+__device__ __forceinline__ ep_fp8x2_storage_t ep_cvt_float2_to_fp8x2(float2 x) {
+    return __musa_cvt_float2_to_fp8x2(x, __MT_SATFINITE, __MT_E4M3);
+}
 #endif
 
 // -- Device intrinsics -------------------------------------------------------
@@ -93,6 +93,15 @@ __forceinline__ __device__ int get_lane_id() { return threadIdx.x % 32; }
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
 #include <infiniband/mlx5dv.h>
+
+// -- FP8 ----------------------------------------------------------------------
+using ep_fp8_storage_t = __nv_fp8_storage_t;
+using ep_fp8x2_storage_t = __nv_fp8x2_storage_t;
+#if defined(__CUDACC__) || defined(__MCC__)
+__device__ __forceinline__ ep_fp8x2_storage_t ep_cvt_float2_to_fp8x2(float2 x) {
+    return __nv_cvt_float2_to_fp8x2(x, __NV_SATFINITE, __NV_E4M3);
+}
+#endif
 
 // -- Device intrinsics -------------------------------------------------------
 #if defined(__CUDACC__) || defined(__MCC__)
