@@ -198,16 +198,19 @@ class Buffer:
             try:
                 local_handle_ints = self.runtime.get_ipc_handle()
                 # pybind11 converts std::vector<int32_t> to a list of integers.
-                # IPC handles are just int32 host metadata.
+                # Exchange through the active backend device; Mooncake PG does
+                # not reliably gather CPU tensors in the MUSA path.
                 local_handle_tensor = torch.tensor(
-                    local_handle_ints, dtype=torch.int32, device="cpu"
+                    local_handle_ints, dtype=torch.int32, device=_DEVICE
                 )
                 handles = [
-                    torch.empty(len(local_handle_ints), dtype=torch.int32, device="cpu")
+                    torch.empty(
+                        len(local_handle_ints), dtype=torch.int32, device=_DEVICE
+                    )
                     for _ in range(self.group_size)
                 ]
                 dist.all_gather(handles, local_handle_tensor, self.group)
-                remote_handles = [h.tolist() for h in handles]
+                remote_handles = [h.cpu().tolist() for h in handles]
                 self.runtime.sync_nvlink_ipc_handles(remote_handles,
                                                      _all_ranks_active(self.group_size))
             except Exception as e:
@@ -273,6 +276,7 @@ class Buffer:
         # (C++ assertion), so also force async_finish=False.
         # Additionally, P2P writes via MTLink may not be visible to peer
         # devices without an explicit host-side barrier between SEND and RECV.
+        requested_return_recv_hook = return_recv_hook
         if _USE_MUSA and not return_recv_hook:
             return_recv_hook = True
             async_finish = False
@@ -335,12 +339,17 @@ class Buffer:
             packed_recv_src_info,
             packed_recv_layout_range,
         )
+        hook = self._wrap_hook_musa(hook) if (_USE_MUSA and hook) else hook
+        if _USE_MUSA and hook and not requested_return_recv_hook:
+            hook()
+            hook = None
+
         return (
             (packed_recv_x, packed_recv_x_scales) if use_fp8 else packed_recv_x,
             packed_recv_count,
             handle,
             EventOverlap(event, tensors_to_record if async_finish else None),
-            self._wrap_hook_musa(hook) if (_USE_MUSA and hook) else hook,
+            hook,
         )
 
     # noinspection PyTypeChecker
@@ -358,6 +367,7 @@ class Buffer:
         out: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, EventOverlap, Callable]:
         # Same MUSA split-kernel fix as dispatch()
+        requested_return_recv_hook = return_recv_hook
         if _USE_MUSA and not return_recv_hook:
             return_recv_hook = True
             async_finish = False
@@ -411,10 +421,15 @@ class Buffer:
             layout_range,
             combined_x,
         )
+        hook = self._wrap_hook_musa(hook) if (_USE_MUSA and hook) else hook
+        if _USE_MUSA and hook and not requested_return_recv_hook:
+            hook()
+            hook = None
+
         return (
             combined_x,
             EventOverlap(event, tensors_to_record if async_finish else None),
-            self._wrap_hook_musa(hook) if (_USE_MUSA and hook) else hook,
+            hook,
         )
 
     def _wrap_hook_musa(self, hook):

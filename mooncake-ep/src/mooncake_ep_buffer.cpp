@@ -102,8 +102,10 @@ MooncakeEpBuffer::MooncakeEpBuffer(int rank, int num_ranks,
 
     // Workspace
     CUDA_CHECK(cudaMalloc(&workspace, NUM_WORKSPACE_BYTES));
-    CUDA_CHECK(cudaMemsetAsync(workspace, 0, NUM_WORKSPACE_BYTES,
-                               comm_stream.stream()));
+    // The first dispatch may run on the caller's current stream when
+    // return_recv_hook is enabled.  Clear synchronously so workspace counters
+    // are initialized before any stream can consume them.
+    CUDA_CHECK(cudaMemset(workspace, 0, NUM_WORKSPACE_BYTES));
 }
 
 MooncakeEpBuffer::~MooncakeEpBuffer() noexcept(false) {

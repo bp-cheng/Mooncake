@@ -225,6 +225,13 @@ def worker(rank, world_size, config_dict):
         traceback.print_exc()
         raise
 
+    if _USE_MUSA:
+        # Mooncake PG's MUSA backend can segfault during Python interpreter
+        # teardown after a successful test.  Exit the worker after all device
+        # work is synchronized so grid tests report the EP result instead of a
+        # backend cleanup artifact.
+        os._exit(0)
+
     if config_dict.get("fail_rank", -1) != -1:
         # Survivor: skip destroy_process_group (would hang) and exit hard.
         # PG backend background threads (ConnectionPoller, WorkerThread)
