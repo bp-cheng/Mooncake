@@ -19,13 +19,11 @@ if _USE_MUSA:
     _set_device = torch_musa.set_device
     _device_count = torch_musa.device_count
     _DEVICE = "musa"
-    _DEFAULT_DEVICE_FILTER = "mlx5_2"
 else:
     _sync = torch.cuda.synchronize
     _set_device = torch.cuda.set_device
     _device_count = torch.cuda.device_count
     _DEVICE = "cuda"
-    _DEFAULT_DEVICE_FILTER = "mlx5_1,mlx5_2,mlx5_3,mlx5_4"
 
 
 def dequantize_fp8(x_fp8: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
@@ -203,10 +201,11 @@ def worker(rank, world_size, config_dict):
     _set_device(rank)
     torch.set_default_dtype(torch.bfloat16)
 
-    # Device filter: MUSA defaults to one known-good HCA on MT; CUDA keeps the
-    # original multi-HCA default unless DEVICE_FILTER is set by the caller.
+    # Device filter
     device_filter = [
-        f for f in os.getenv("DEVICE_FILTER", _DEFAULT_DEVICE_FILTER).split(",") if f
+        f
+        for f in os.getenv("DEVICE_FILTER", "mlx5_1,mlx5_2,mlx5_3,mlx5_4").split(",")
+        if f
     ]
     if device_filter:
         pg.set_device_filter(device_filter)
@@ -235,23 +234,10 @@ def worker(rank, world_size, config_dict):
 
 
 class TestMooncakeEPBuffer(unittest.TestCase):
-    _port_counter = 29500
-
     def setUp(self):
         self.world_size = _device_count()
         os.environ["MASTER_ADDR"] = "127.0.0.1"
-        os.environ["MASTER_PORT"] = str(TestMooncakeEPBuffer._port_counter)
-        TestMooncakeEPBuffer._port_counter += 1
-        # MT validation target is P2P fast path.  IBGDA is still under triage
-        # on this host, so keep it out of the default MUSA grid.
-        if _USE_MUSA and "MOONCAKE_EP_DISABLE_IBGDA" not in os.environ:
-            os.environ["MOONCAKE_EP_DISABLE_IBGDA"] = "1"
-        # Constrain EP to a single HCA to avoid cross-NIC address-resolution
-        # failures on multi-NIC hosts (e.g. MT S5000).
-        if _USE_MUSA and "MOONCAKE_EP_DEVICE_FILTER" not in os.environ:
-            os.environ["MOONCAKE_EP_DEVICE_FILTER"] = os.getenv(
-                "DEVICE_FILTER", "mlx5_2"
-            )
+        os.environ["MASTER_PORT"] = "29500"
 
     def run_single_config(self, config_dict):
         try:
