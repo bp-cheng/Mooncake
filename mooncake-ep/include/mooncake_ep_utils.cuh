@@ -24,7 +24,6 @@
 
 namespace mooncake {
 
-// VecInt is used by UNROLLED_WARP_COPY and TMA helpers.
 template <int kBytes>
 struct VecInt {};
 template <>
@@ -138,8 +137,6 @@ __device__ __forceinline__ void tma_store_wait() {
 }
 
 #endif // MOONCAKE_EP_USE_MUSA
-
-// ---- Shared helpers ----
 
 template <typename dtype_t>
 __host__ __device__ dtype_t cell_div(dtype_t a, dtype_t b) {

@@ -5,7 +5,7 @@
 #include <mooncake_ep_configs.cuh>
 #include <mooncake_ep_exception.cuh>
 #include <mooncake_ep_launch.cuh>
-#include "transport/device/comm_device.cuh"
+#include <transport/device/comm_device.cuh>
 #include <mooncake_ep_utils.cuh>
 
 namespace mooncake {
@@ -122,7 +122,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
     const size_t num_int4_per_msg = num_bytes_per_msg / sizeof(int4);
     EP_DEVICE_ASSERT(num_bytes_per_msg % sizeof(int4) == 0);
 
-    // Communication context: platform dispatch is inside comm_device.cuh.
+    // Communication context — platform dispatch is inside comm_device.cuh
     const CommCtx comm_ctx = make_comm_ctx(
         mxa_buffer, nvlink_available, ipc_peer_ptrs,
         raddrs, rkeys, qp_devctxs,
@@ -211,14 +211,14 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
 
                 void* write_dst = mc_route_put(comm_ctx, dst_rank, dst_ptr);
                 if (write_dst != nullptr) {
-                    // Local or P2P path: warp-cooperative copy.
+                    // Local or P2P path — warp-cooperative copy
                     const auto* src_int4_ptr = reinterpret_cast<const int4*>(src_ptr);
                     const auto* dst_int4_ptr = reinterpret_cast<int4*>(write_dst);
                     mc_fence();
                     UNROLLED_WARP_COPY(8, lane_id, num_int4_per_msg, dst_int4_ptr, src_int4_ptr, mc_ld_nc, mc_st_na);
                     mc_fence();
                 } else {
-                    // IBGDA path: send directly from source buffer.
+                    // IBGDA path — send directly from source buffer
                     mc_rdma_put(comm_ctx, dst_expert_local_idx % num_qp_per_rank, dst_rank, num_qp_per_rank,
                                       src_ptr, dst_ptr, num_bytes_per_msg, lane_id);
                 }
@@ -532,7 +532,7 @@ combine(void* combined_x, int32_t* active_ranks,
     constexpr size_t num_bytes_per_slot = kHidden * sizeof(nv_bfloat16);
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
 
-    // Communication context: platform dispatch is inside comm_device.cuh.
+    // Communication context — platform dispatch is inside comm_device.cuh
     const CommCtx comm_ctx = make_comm_ctx(
         mxa_buffer, nvlink_available, ipc_peer_ptrs,
         raddrs, rkeys, qp_devctxs,
@@ -589,12 +589,12 @@ combine(void* combined_x, int32_t* active_ranks,
 
             void* write_dst = mc_route_put(comm_ctx, dst_rank, dst_ptr);
             if (write_dst != nullptr) {
-                // Local or P2P path: warp-cooperative copy.
+                // Local or P2P path — warp-cooperative copy
                 const auto dst_int4_ptr = reinterpret_cast<int4*>(write_dst);
                 UNROLLED_WARP_COPY(7, lane_id, hidden_bf16_int4, dst_int4_ptr, x_int4, mc_ld_nc, mc_st_na);
                 mc_fence();
             } else {
-                // IBGDA path: stage to send buffer then RDMA write.
+                // IBGDA path — stage to send buffer then RDMA write
                 const auto buf_int4_ptr = reinterpret_cast<int4*>(buf_ptr);
                 if (not zero_copy)
                     UNROLLED_WARP_COPY(7, lane_id, hidden_bf16_int4, buf_int4_ptr, x_int4, mc_ld_nc, mc_st_na);

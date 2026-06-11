@@ -9,7 +9,7 @@ namespace mooncake {
 namespace device {
 
 // ---------------------------------------------------------------------------
-// Acquire loads: cross-GPU visibility (sys scope)
+// Acquire loads — cross-GPU visibility (sys scope)
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ int mc_ld_acquire(const int* ptr) {
     int ret;
@@ -24,7 +24,7 @@ __device__ __forceinline__ uint64_t mc_ld_acquire_u64(const uint64_t* ptr) {
 }
 
 // ---------------------------------------------------------------------------
-// Release stores: cross-GPU visibility (sys scope), non-temporal (no alloc)
+// Release stores — cross-GPU visibility (sys scope), non-temporal (no alloc)
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_st_release(const int* ptr, int val) {
     asm volatile("st.release.sys.global.L1::no_allocate.s32 [%0], %1;"
@@ -47,7 +47,7 @@ __device__ __forceinline__ void mc_st_release_u64(const uint64_t* ptr,
 }
 
 // ---------------------------------------------------------------------------
-// Atomic add: release semantics, sys scope
+// Atomic add — release semantics, sys scope
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ int mc_atomic_add_release(const int* ptr, int val) {
     int ret;
@@ -58,7 +58,7 @@ __device__ __forceinline__ int mc_atomic_add_release(const int* ptr, int val) {
 }
 
 // ---------------------------------------------------------------------------
-// Non-coherent loads (read-only cache, no L1 alloc) for bulk data reads.
+// Non-coherent loads (read-only cache, no L1 alloc) — for bulk data reads
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ int4 mc_ld_nc(const int4* ptr) {
     int4 ret;
@@ -94,7 +94,7 @@ __device__ __forceinline__ int64_t mc_ld_nc_s64(const int64_t* ptr) {
 }
 
 // ---------------------------------------------------------------------------
-// Non-temporal stores (no L1 alloc) for bulk data writes.
+// Non-temporal stores (no L1 alloc) — for bulk data writes
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_st_na(const int4* ptr, const int4& val) {
     asm volatile("st.global.L1::no_allocate.v4.s32 [%0], {%1,%2,%3,%4};"
@@ -103,12 +103,12 @@ __device__ __forceinline__ void mc_st_na(const int4* ptr, const int4& val) {
 }
 
 // ---------------------------------------------------------------------------
-// Named barrier init: no-op on CUDA (hardware named barriers need no setup).
+// Named barrier init — no-op on CUDA (hardware named barriers need no setup).
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_bar_init() {}
 
 // ---------------------------------------------------------------------------
-// Named barrier (warp-group scope): CUDA PTX bar.sync
+// Named barrier (warp-group scope) — CUDA PTX bar.sync
 // On MUSA this maps to __syncthreads(); see musa_ops.cuh for details.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_bar_sync(int bar_id, int num_threads) {
@@ -116,9 +116,10 @@ __device__ __forceinline__ void mc_bar_sync(int bar_id, int num_threads) {
 }
 
 // ---------------------------------------------------------------------------
-// Grid-level sync: cooperative_groups::this_grid().sync().
-// On MUSA this is a no-op because SEND and RECV use split launches plus a
-// device phase ack instead of a cooperative single-kernel grid sync.
+// Grid-level sync — cooperative_groups::this_grid().sync().
+// On MUSA this is a no-op because the host always uses separate kernel
+// launches (return_recv_hook=true), so SEND and RECV never run in the same
+// kernel invocation.
 // ---------------------------------------------------------------------------
 __device__ __forceinline__ void mc_grid_sync() {
     cooperative_groups::this_grid().sync();

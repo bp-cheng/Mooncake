@@ -88,7 +88,7 @@ class Buffer:
         self.group_size = group.size()
         self.group = group
         self.num_ep_buffer_bytes = num_ep_buffer_bytes
-        self.backend = group
+        self.backend = self.group
         # NIC auto-detection happens inside ep.Buffer via Topology::discover().
         # Set MOONCAKE_EP_DEVICE_FILTER=mlx5_1,mlx5_2 to restrict NIC selection.
         # If engine is provided, pass the TransferEngine* so EP can get
@@ -100,8 +100,8 @@ class Buffer:
         else:
             self.runtime = ep.Buffer(self.rank, self.group_size,
                                      num_ep_buffer_bytes)
-        # Fallback flag and buffers.  P2P IPC exchange below can still make the
-        # fast path available when IBGDA is disabled.
+        # Note: `sync_nvlink_ipc_handles()` can mutate C++ `ibgda_disabled_` (True->False when
+        # P2P+IPC succeeds for all ranks). We re-evaluate after IPC sync below.
         self._use_fallback = bool(self.runtime.ibgda_disabled())
         self._fallback_next_combine_buffer: Optional[torch.Tensor] = None
         self.connect()
@@ -128,7 +128,7 @@ class Buffer:
             dist.all_gather(rkeys, rkey, self.group)
             rkeys = torch.cat(rkeys).tolist()
 
-            qps_per_rank = ep.MAX_QP_COUNT // self.group_size
+            all_to_all_size = ep.MAX_QP_COUNT // self.group_size
 
             if is_update:
                 self.runtime.update_local_qpns()
@@ -148,8 +148,8 @@ class Buffer:
             for r in range(self.group_size):
                 qpns = all_qpns_list[r].tolist()
                 # Take the slice of rank r's QPs that target this rank
-                start = self.rank * qps_per_rank
-                remote_qpns.append(qpns[start:start + qps_per_rank])
+                start = self.rank * all_to_all_size
+                remote_qpns.append(qpns[start:start + all_to_all_size])
 
             # Exchange per-rank LID slices via all_gather (gloo has no all_to_all)
             local_lids = self.runtime.get_local_lids()
@@ -165,8 +165,8 @@ class Buffer:
             for r in range(self.group_size):
                 lids = all_lids_list[r].tolist()
                 # Take the slice of rank r's LIDs that target this rank
-                start = self.rank * qps_per_rank
-                remote_lids.append(lids[start:start + qps_per_rank])
+                start = self.rank * all_to_all_size
+                remote_lids.append(lids[start:start + all_to_all_size])
 
             # Exchange GIDs (needed for RoCE; harmless for IB)
             (subnet_prefix, interface_id) = self.runtime.get_gid()
@@ -198,7 +198,7 @@ class Buffer:
         if not _disable_p2p:
             try:
                 local_handle_ints = self.runtime.get_ipc_handle()
-                # pybind11 converts std::vector<int32_t> to a list of integers.
+                # pybind11 converts std::vector<int32_t> to a list of integers
                 # Exchange through the active backend device; Mooncake PG does
                 # not reliably gather CPU tensors in the MUSA path.
                 local_handle_tensor = torch.tensor(
@@ -500,13 +500,12 @@ class Buffer:
             num_ranks = self.group_size
             num_local_experts = num_experts // num_ranks
 
-            # Gather sizes first to handle variable num_tokens per rank.
-            gather_device = x.device
+            # Gather sizes first to handle variable num_tokens per rank
             num_tokens_tensor = torch.tensor(
-                [num_tokens], dtype=torch.int64, device=gather_device
+                [num_tokens], dtype=torch.int64, device=x.device
             )
             num_tokens_list = [
-                torch.empty(1, dtype=torch.int64, device=gather_device)
+                torch.empty(1, dtype=torch.int64, device=x.device)
                 for _ in range(num_ranks)
             ]
             dist.all_gather(num_tokens_list, num_tokens_tensor, group=self.group)
@@ -542,7 +541,7 @@ class Buffer:
 
             num_max_dispatch_tokens = num_ranks * num_max_dispatch_tokens_per_rank
 
-            # Gather inputs from all ranks (all have same shape after padding).
+            # Gather inputs from all ranks (all have same shape after padding)
             all_x = torch.empty(
                 (num_ranks, max_num_tokens, hidden), dtype=x.dtype, device=x.device
             )
@@ -725,13 +724,12 @@ class Buffer:
             num_ranks = self.group_size
             num_local_experts = num_experts // num_ranks
 
-            # Gather sizes first to handle variable num_tokens per rank.
-            gather_device = topk_idx.device
+            # Gather sizes first to handle variable num_tokens per rank
             num_tokens_tensor = torch.tensor(
-                [num_tokens], dtype=torch.int64, device=gather_device
+                [num_tokens], dtype=torch.int64, device=topk_idx.device
             )
             num_tokens_list = [
-                torch.empty(1, dtype=torch.int64, device=gather_device)
+                torch.empty(1, dtype=torch.int64, device=topk_idx.device)
                 for _ in range(num_ranks)
             ]
             dist.all_gather(num_tokens_list, num_tokens_tensor, group=self.group)
@@ -829,7 +827,7 @@ class Buffer:
                         weights = (w_rows * mask).sum(dim=1).view(-1, 1)
                         send_buf[src_rank, tokens_valid] += contrib_valid * weights
 
-            # All-reduce then take local slice (only valid tokens).
+            # All-reduce then take local slice (only valid tokens)
             # Mooncake PG supports MUSA device tensors; avoid CPU round-trips
             # here because CPU->MUSA copies can hang after the CPU collective.
             dist.all_reduce(send_buf, group=self.group)

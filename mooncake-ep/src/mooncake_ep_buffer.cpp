@@ -40,6 +40,7 @@ MooncakeEpBuffer::MooncakeEpBuffer(int rank, int num_ranks,
       comm_stream(EP_GET_STREAM_FROM_POOL(true)) {
     USE_QP_COUNT = MAX_QP_COUNT / num_ranks * num_ranks;
 
+    // Get ranks
     CUDA_CHECK(cudaGetDevice(&device_id));
     CUDA_CHECK(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate,
                                       device_id));
@@ -100,7 +101,7 @@ MooncakeEpBuffer::MooncakeEpBuffer(int rank, int num_ranks,
         }
     }
 
-    // Workspace
+    // Create 32 MiB workspace
     CUDA_CHECK(cudaMalloc(&workspace, NUM_WORKSPACE_BYTES));
     CUDA_CHECK(cudaMemsetAsync(workspace, 0, NUM_WORKSPACE_BYTES, comm_stream));
 }
@@ -191,7 +192,9 @@ MooncakeEpBuffer::dispatch(const torch::Tensor& x,
     auto packed_recv_x_scales = std::optional<torch::Tensor>();
     float* packed_recv_x_scales_ptr = nullptr;
     if (use_fp8) {
-        EP_HOST_ASSERT((num_ranks * num_max_dispatch_tokens_per_rank) % 4 == 0);
+        EP_HOST_ASSERT((num_ranks * num_max_dispatch_tokens_per_rank) % 4 ==
+                           0 and
+                       "TMA requires the number of tokens to be multiple of 4");
         packed_recv_x_scales =
             torch::empty({num_local_experts, num_scales,
                           num_ranks * num_max_dispatch_tokens_per_rank},
@@ -318,7 +321,6 @@ MooncakeEpBuffer::combine(const torch::Tensor& x, const torch::Tensor& topk_idx,
     EP_HOST_ASSERT(layout_range.scalar_type() == torch::kInt64);
     EP_HOST_ASSERT(layout_range.size(0) == num_experts / num_ranks and
                    layout_range.size(1) == num_ranks);
-
     auto hidden = static_cast<int>(x.size(2));
     auto num_local_experts = num_experts / num_ranks,
          num_topk = static_cast<int>(topk_weights.size(1));
@@ -437,11 +439,12 @@ torch::Tensor MooncakeEpBuffer::get_next_combine_buffer(
     BufferPair layout(gdr_buffer, num_max_dispatch_tokens_per_rank, hidden,
                       num_ranks, num_experts);
     auto buffer = layout.buffers[buffer_idx];
+    auto dtype = torch::kBFloat16;
     size_t num_bytes_per_combine_msg = hidden * sizeof(nv_bfloat16);
-    auto num_msg_elems = static_cast<int>(num_bytes_per_combine_msg /
-                                          elementSize(torch::kBFloat16));
-    EP_HOST_ASSERT(num_bytes_per_combine_msg % elementSize(torch::kBFloat16) ==
-                   0);
+    auto num_msg_elems =
+        static_cast<int>(num_bytes_per_combine_msg / elementSize(dtype));
+
+    EP_HOST_ASSERT(num_bytes_per_combine_msg % elementSize(dtype) == 0);
     return torch::from_blob(
         buffer.rdma_send_data_buffer,
         {num_experts / num_ranks, num_ranks * num_max_dispatch_tokens_per_rank,

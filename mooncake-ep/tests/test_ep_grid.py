@@ -12,19 +12,6 @@ import traceback
 from mooncake.mooncake_ep_buffer import Buffer
 import mooncake.pg as pg
 
-_USE_MUSA = os.getenv("MOONCAKE_EP_USE_MUSA", "").upper() in {"1", "ON", "TRUE", "YES"}
-if _USE_MUSA:
-    import torch_musa
-    _sync = torch_musa.synchronize
-    _set_device = torch_musa.set_device
-    _device_count = torch_musa.device_count
-    _DEVICE = "musa"
-else:
-    _sync = torch.cuda.synchronize
-    _set_device = torch.cuda.set_device
-    _device_count = torch.cuda.device_count
-    _DEVICE = "cuda"
-
 
 def dequantize_fp8(x_fp8: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     hidden = x_fp8.shape[-1]
@@ -58,13 +45,13 @@ def run_test_iteration(
     num_tokens = int(max_tokens * scale)
 
     # Prepare test data
-    x = torch.randn(num_tokens, hidden, dtype=torch.bfloat16, device=_DEVICE)
-    scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device=_DEVICE)
+    x = torch.randn(num_tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device="cuda")
     topk_idx = torch.topk(scores, top_k, dim=-1)[1]
     topk_weights = torch.softmax(
-        torch.rand(num_tokens, top_k, dtype=torch.float32, device=_DEVICE), dim=-1
+        torch.rand(num_tokens, top_k, dtype=torch.float32, device="cuda"), dim=-1
     )
-    active_ranks = torch.ones((num_ranks,), dtype=torch.int32, device=_DEVICE)
+    active_ranks = torch.ones((num_ranks,), dtype=torch.int32, device="cuda")
 
     # Prepare expected result
     def get_mock_factor(expert_id):
@@ -126,7 +113,7 @@ def run_test_iteration(
     if async_finish:
         event.current_stream_wait()
 
-    _sync()
+    torch.cuda.synchronize()
     # Fault-tolerance check
     if fail_rank != -1:
         assert active_ranks[fail_rank].item() == 0, (
@@ -182,7 +169,7 @@ def run_test_iteration(
     if async_finish:
         event.current_stream_wait()
 
-    _sync()
+    torch.cuda.synchronize()
 
     testing.assert_close(
         combined_x,
@@ -192,13 +179,14 @@ def run_test_iteration(
         msg=lambda msg: f"[Rank {rank}] Combine Mismatch. {msg}",
     )
 
-    _sync()
+    torch.cuda.synchronize()
     if fail_rank == -1:
         dist.barrier(group)
 
 
 def worker(rank, world_size, config_dict):
-    _set_device(rank)
+    import torchada  # noqa: F401 — maps torch.cuda.* to torch.musa.* on MUSA
+    torch.cuda.set_device(rank)
     torch.set_default_dtype(torch.bfloat16)
 
     # Device filter
@@ -235,25 +223,19 @@ def worker(rank, world_size, config_dict):
 
 class TestMooncakeEPBuffer(unittest.TestCase):
     def setUp(self):
-        self.world_size = _device_count()
+        import torchada  # noqa: F401 — maps torch.cuda.* to torch.musa.* on MUSA
+        self.world_size = torch.cuda.device_count()
         os.environ["MASTER_ADDR"] = "127.0.0.1"
         os.environ["MASTER_PORT"] = "29500"
 
     def run_single_config(self, config_dict):
-        try:
-            mp.spawn(
-                worker,
-                args=(self.world_size, config_dict),
-                nprocs=self.world_size,
-                join=True,
-                daemon=False,
-            )
-        except mp.ProcessExitedException:
-            if config_dict.get("fail_rank", -1) == -1:
-                raise
-            # Safety net: let all survivor processes fully terminate.
-            import time
-            time.sleep(5)
+        mp.spawn(
+            worker,
+            args=(self.world_size, config_dict),
+            nprocs=self.world_size,
+            join=True,
+            daemon=False,
+        )
 
 
 def make_test_name(cfg):
