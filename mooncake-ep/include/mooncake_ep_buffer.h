@@ -144,14 +144,13 @@ struct MooncakeEpBuffer {
 
     // Connect IBGDA QPs to peers.  Unified entry point — handles both IB and
     // RoCE based on is_roce().
-    void sync_ibgda_peers(
-        const std::vector<int64_t>& remote_addrs,
-        const std::vector<int32_t>& remote_keys,
-        const std::vector<std::vector<int32_t>>& peer_qpns,
-        const std::vector<std::vector<int32_t>>& peer_lids,
-        const std::vector<int64_t>& subnet_prefixes,
-        const std::vector<int64_t>& interface_ids,
-        const std::vector<int>& active_ranks_mask);
+    void sync_ibgda_peers(const std::vector<int64_t>& remote_addrs,
+                          const std::vector<int32_t>& remote_keys,
+                          const std::vector<std::vector<int32_t>>& peer_qpns,
+                          const std::vector<std::vector<int32_t>>& peer_lids,
+                          const std::vector<int64_t>& subnet_prefixes,
+                          const std::vector<int64_t>& interface_ids,
+                          const std::vector<int>& active_ranks_mask);
 
     // Metadata accessors for Python-level bootstrap exchange.
     std::tuple<int64_t, int32_t> get_mr_info() {
@@ -183,11 +182,6 @@ struct MooncakeEpBuffer {
         const std::vector<std::vector<int32_t>>& remote_handles,
         const std::vector<int>& active_ranks_mask);
 
-    // Debug-only host-side memcpy test. This writes test bytes into peer-mapped
-    // EP buffers, so do not call it in the default connect/runtime path.
-    bool verify_peer_access() {
-        return p2p_transport_ && p2p_transport_->verifyPeerAccess();
-    }
 };
 
 inline size_t get_ep_buffer_size_hint(int num_max_dispatch_tokens_per_rank,
